@@ -4,7 +4,7 @@ import com.google.gson.*;
 import com.google.gson.reflect.TypeToken;
 import com.pixelmon.smogonimporter.SmogonImporter;
 import com.pixelmon.smogonimporter.config.SmogonConfig;
-import com.pixelmon.smogonimporter.data.models.PokemonData;
+import com.pixelmon.smogonimporter.data.PokemonData;
 import net.minecraft.server.MinecraftServer;
 import net.neoforged.fml.loading.FMLPaths;
 
@@ -34,6 +34,9 @@ public class DataManager {
     private volatile boolean initialized = false;
     private volatile long lastUpdateTime = 0;
 
+    // Central registry for moves, items, abilities, pokedex
+    private final SmogonDataRegistry dataRegistry = new SmogonDataRegistry();
+
     public DataManager() {
         this.cacheDir = FMLPaths.CONFIGDIR.get().resolve("smogonimporter");
         this.cacheFile = cacheDir.resolve("pokemon_cache.json");
@@ -55,8 +58,12 @@ public class DataManager {
 
         SmogonImporter.LOGGER.info("Initializing Smogon data manager...");
 
+        // Gen9 mode: Always fetch from web (cache doesn't store Gen9SetSelector data)
+        // Gen8 mode: Use cache if available
+        boolean canUseCache = SmogonConfig.USE_CACHE.get() && !SmogonConfig.isGen9();
+
         // Try to load from cache first
-        if (SmogonConfig.USE_CACHE.get() && loadFromCache()) {
+        if (canUseCache && loadFromCache()) {
             SmogonImporter.LOGGER.info("Loaded {} Pokemon from cache", pokemonDatabase.size());
 
             // Check if cache needs updating
@@ -69,10 +76,24 @@ public class DataManager {
             }
         } else {
             // No valid cache, fetch fresh data
+            if (SmogonConfig.isGen9()) {
+                SmogonImporter.LOGGER.info("Gen9 mode: Fetching data from web (cache not supported for Gen9)");
+            }
             fetchDataFromWeb();
         }
 
+        // Initialize comprehensive data registry (moves, items, abilities, pokedex)
+        SmogonImporter.LOGGER.info("Loading comprehensive Smogon data (moves, items, abilities, pokedex)...");
+        dataRegistry.initialize();
+
         initialized = true;
+    }
+
+    /**
+     * Get the data registry (for moves, items, abilities, pokedex)
+     */
+    public SmogonDataRegistry getDataRegistry() {
+        return dataRegistry;
     }
 
     /**
@@ -80,9 +101,10 @@ public class DataManager {
      */
     public CompletableFuture<Boolean> fetchDataFromWeb() {
         return CompletableFuture.supplyAsync(() -> {
-            SmogonImporter.LOGGER.info("Fetching Pokemon data from web...");
+            String generation = SmogonConfig.GENERATION.get();
+            SmogonImporter.LOGGER.info("Fetching {} Pokemon data from web...", generation.toUpperCase());
 
-            String dataUrl = SmogonConfig.PRIMARY_DATA_URL.get();
+            String dataUrl = SmogonConfig.getPrimaryDataURL();
             int retries = 0;
 
             while (retries <= SmogonConfig.MAX_RETRIES.get()) {
@@ -103,7 +125,7 @@ public class DataManager {
 
                 // Try backup URLs
                 if (retries <= SmogonConfig.MAX_RETRIES.get()) {
-                    List<String> backupUrls = (List<String>) SmogonConfig.BACKUP_DATA_URLS.get();
+                    List<String> backupUrls = SmogonConfig.getBackupDataURLs();
                     for (String backupUrl : backupUrls) {
                         try {
                             String jsonData = fetchFromUrl(backupUrl);
@@ -163,8 +185,29 @@ public class DataManager {
 
     /**
      * Parse JSON data and store in database
+     * Branches based on generation (gen8 vs gen9)
      */
     private void parseAndStoreData(String jsonData) {
+        String generation = SmogonConfig.GENERATION.get();
+
+        if (SmogonConfig.isGen9()) {
+            SmogonImporter.LOGGER.info("Parsing Gen9 sets.json...");
+            parseGen9Data(jsonData);
+        } else {
+            SmogonImporter.LOGGER.info("Parsing Gen8 data.json...");
+            parseGen8Data(jsonData);
+        }
+
+        lastUpdateTime = System.currentTimeMillis();
+    }
+
+    /**
+     * Parse Gen8 data.json format from GitHub
+     * Format: { "species": { "level": 84, "moves": [...] } }
+     * Uses dynamic generation - stores base Pokemon with movepool
+     * Abilities are populated from pokedex data
+     */
+    private void parseGen8Data(String jsonData) {
         pokemonDatabase.clear();
         pokemonNames.clear();
 
@@ -179,14 +222,133 @@ public class DataManager {
             pokemon.setName(pokemonName);
             pokemon.setGeneration(generation);
 
+            // Gen8 data doesn't include abilities - get them from pokedex
+            if (pokemon.getAbilities() == null || pokemon.getAbilities().isEmpty()) {
+                PokedexEntry pokedexEntry = dataRegistry.getPokedexEntry(pokemonName);
+                if (pokedexEntry != null && pokedexEntry.getAbilities() != null) {
+                    List<String> abilities = pokedexEntry.getAbilities().getAllAbilities();
+                    if (!abilities.isEmpty()) {
+                        pokemon.setAbilities(abilities);
+                    } else {
+                        // Fallback to avoid null pointer
+                        pokemon.setAbilities(java.util.Collections.singletonList("Unknown"));
+                        SmogonImporter.LOGGER.warn("Pokemon '{}' has no abilities in pokedex", pokemonName);
+                    }
+                } else {
+                    // Fallback to avoid null pointer
+                    pokemon.setAbilities(java.util.Collections.singletonList("Unknown"));
+                    SmogonImporter.LOGGER.warn("Pokemon '{}' not found in pokedex", pokemonName);
+                }
+            }
+
             pokemonDatabase.put(pokemonName.toLowerCase(), pokemon);
             pokemonNames.add(pokemonName);
         }
 
-        lastUpdateTime = System.currentTimeMillis();
+        if (SmogonConfig.DEBUG_MODE.get()) {
+            SmogonImporter.LOGGER.debug("Parsed {} Gen8 Pokemon entries", pokemonDatabase.size());
+        }
+    }
+
+    /**
+     * Parse Gen9 sets.json format from GitHub
+     * Format: { "species": { "level": 84, "sets": [{"role": "...", "movepool": [...], "abilities": [...]}] } }
+     * Creates one PokemonData per role/set - allows role-specific generation
+     */
+    private void parseGen9Data(String jsonData) {
+        pokemonDatabase.clear();
+        pokemonNames.clear();
+
+        JsonObject root = JsonParser.parseString(jsonData).getAsJsonObject();
+        String generation = SmogonConfig.GENERATION.get();
+        int totalSetsLoaded = 0;
+
+        for (Map.Entry<String, JsonElement> entry : root.entrySet()) {
+            String pokemonName = entry.getKey();
+            JsonObject pokemonJson = entry.getValue().getAsJsonObject();
+
+            try {
+                // Parse the Gen9 format
+                int level = pokemonJson.has("level") ? pokemonJson.get("level").getAsInt() : 100;
+
+                if (!pokemonJson.has("sets") || pokemonJson.getAsJsonArray("sets").isEmpty()) {
+                    SmogonImporter.LOGGER.warn("Pokemon '{}' has no sets, skipping", pokemonName);
+                    continue;
+                }
+
+                // Parse ALL sets (not just the first one!)
+                JsonArray setsArray = pokemonJson.getAsJsonArray("sets");
+
+                for (JsonElement setElement : setsArray) {
+                    if (!setElement.isJsonObject()) continue;
+
+                    JsonObject setData = setElement.getAsJsonObject();
+
+                    // Extract role
+                    String role = setData.has("role") ? setData.get("role").getAsString() : "Unknown";
+
+                    // Extract movepool
+                    List<String> moves = new ArrayList<>();
+                    if (setData.has("movepool")) {
+                        JsonArray movepoolArray = setData.getAsJsonArray("movepool");
+                        for (JsonElement moveElement : movepoolArray) {
+                            moves.add(moveElement.getAsString());
+                        }
+                    }
+
+                    // Extract abilities
+                    List<String> abilities = new ArrayList<>();
+                    if (setData.has("abilities")) {
+                        JsonArray abilitiesArray = setData.getAsJsonArray("abilities");
+                        for (JsonElement abilityElement : abilitiesArray) {
+                            abilities.add(abilityElement.getAsString());
+                        }
+                    }
+
+                    // If no abilities in set, get from pokedex
+                    if (abilities.isEmpty()) {
+                        PokedexEntry pokedexEntry = dataRegistry.getPokedexEntry(pokemonName);
+                        if (pokedexEntry != null && pokedexEntry.getAbilities() != null) {
+                            abilities = pokedexEntry.getAbilities().getAllAbilities();
+                        }
+                    }
+
+                    // Create PokemonData object for this role
+                    PokemonData pokemon = new PokemonData();
+                    pokemon.setName(pokemonName);
+                    pokemon.setGeneration(generation);
+                    pokemon.setLevel(level);
+                    pokemon.setRole(role);
+                    pokemon.setMoves(moves);
+                    pokemon.setAbilities(abilities.isEmpty() ?
+                        java.util.Collections.singletonList("Unknown") : abilities);
+
+                    // Items will be selected by ItemSelector based on moveset and role
+                    pokemon.setItems(null);  // SetGenerator doesn't use this field
+
+                    // Store with composite key: "species|role"
+                    String compositeKey = pokemonName.toLowerCase() + "|" + role;
+                    pokemonDatabase.put(compositeKey, pokemon);
+
+                    // Also add species name to list (deduplicated)
+                    if (!pokemonNames.contains(pokemonName)) {
+                        pokemonNames.add(pokemonName);
+                    }
+
+                    totalSetsLoaded++;
+                }
+
+            } catch (Exception e) {
+                SmogonImporter.LOGGER.warn("Failed to parse Gen9 Pokemon '{}': {}", pokemonName, e.getMessage());
+            }
+        }
+
+        SmogonImporter.LOGGER.info("Loaded {} Gen9 sets for {} unique Pokemon (avg {:.1f} roles per Pokemon)",
+            totalSetsLoaded, pokemonNames.size(), (double) totalSetsLoaded / Math.max(1, pokemonNames.size()));
 
         if (SmogonConfig.DEBUG_MODE.get()) {
-            SmogonImporter.LOGGER.debug("Parsed {} Pokemon entries", pokemonDatabase.size());
+            SmogonImporter.LOGGER.debug("Parsed {} Gen9 Pokemon entries with {} total role variations",
+                pokemonNames.size(), totalSetsLoaded);
         }
     }
 
@@ -272,10 +434,67 @@ public class DataManager {
     }
 
     /**
-     * Get a Pokemon by name
+     * Get a Pokemon by name (with fuzzy matching)
+     * Handles different spacing/hyphen variations:
+     * - "Tapu Lele", "TapuLele", "tapu-lele" all match
+     * For Gen9: Returns first role found (use getAllRolesForPokemon for all roles)
      */
     public Optional<PokemonData> getPokemon(String name) {
-        return Optional.ofNullable(pokemonDatabase.get(name.toLowerCase()));
+        // Try exact match first (fast path)
+        String lowerName = name.toLowerCase();
+        PokemonData exact = pokemonDatabase.get(lowerName);
+        if (exact != null) {
+            return Optional.of(exact);
+        }
+
+        // Try normalized match (remove spaces and hyphens)
+        String normalized = normalizeName(name);
+        for (Map.Entry<String, PokemonData> entry : pokemonDatabase.entrySet()) {
+            String key = entry.getKey();
+            // Strip role from key if present (format: "species|role")
+            String speciesKey = key.contains("|") ? key.substring(0, key.indexOf("|")) : key;
+
+            if (normalizeName(speciesKey).equals(normalized)) {
+                return Optional.of(entry.getValue());
+            }
+        }
+
+        return Optional.empty();
+    }
+
+    /**
+     * Get all role variations for a Gen9 Pokemon
+     * Returns list of PokemonData, one per role
+     * For Gen8, returns single-element list
+     */
+    public List<PokemonData> getAllRolesForPokemon(String name) {
+        List<PokemonData> roles = new ArrayList<>();
+        String normalized = normalizeName(name.toLowerCase());
+
+        // Search for all entries matching this species
+        for (Map.Entry<String, PokemonData> entry : pokemonDatabase.entrySet()) {
+            String key = entry.getKey();
+            // Strip role from key if present (format: "species|role")
+            String speciesKey = key.contains("|") ? key.substring(0, key.indexOf("|")) : key;
+
+            if (normalizeName(speciesKey).equals(normalized)) {
+                roles.add(entry.getValue());
+            }
+        }
+
+        return roles;
+    }
+
+    /**
+     * Normalizes a Pokemon name for fuzzy matching
+     * Removes spaces, hyphens, and apostrophes, converts to lowercase
+     */
+    private String normalizeName(String name) {
+        if (name == null) return "";
+        return name.toLowerCase()
+                .replace(" ", "")
+                .replace("-", "")
+                .replace("'", "");
     }
 
     /**

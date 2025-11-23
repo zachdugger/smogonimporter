@@ -1,4 +1,4 @@
-package com.pixelmon.smogonimporter.data.models;
+package com.pixelmon.smogonimporter.data;
 
 import com.google.gson.annotations.SerializedName;
 import java.util.List;
@@ -24,6 +24,9 @@ public class PokemonData {
     // Additional metadata
     private transient String generation;
     private transient long lastUpdated;
+
+    // Gen9: Role information (e.g., "Bulky Support", "Fast Attacker")
+    private transient String role;
 
     public PokemonData() {
         this.lastUpdated = System.currentTimeMillis();
@@ -109,6 +112,14 @@ public class PokemonData {
 
     public void setLastUpdated(long lastUpdated) {
         this.lastUpdated = lastUpdated;
+    }
+
+    public String getRole() {
+        return role;
+    }
+
+    public void setRole(String role) {
+        this.role = role;
     }
 
     // Utility methods

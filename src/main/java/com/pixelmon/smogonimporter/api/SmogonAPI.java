@@ -1,8 +1,12 @@
 package com.pixelmon.smogonimporter.api;
 
 import com.pixelmon.smogonimporter.SmogonImporter;
+import com.pixelmon.smogonimporter.config.SmogonConfig;
 import com.pixelmon.smogonimporter.data.DataManager;
-import com.pixelmon.smogonimporter.data.models.PokemonData;
+import com.pixelmon.smogonimporter.data.Gen9PokemonSet;
+import com.pixelmon.smogonimporter.data.PokemonData;
+import com.pixelmon.smogonimporter.logic.SetGenerator;
+import com.pixelmon.smogonimporter.pixelmon.PixelmonBuilder;
 
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
@@ -202,6 +206,134 @@ public class SmogonAPI {
      */
     public Map<String, Object> getStatistics() {
         return dataManager.getStatistics();
+    }
+
+    // ==================== NEW COMPETITIVE GENERATION METHODS ====================
+
+    /**
+     * Generate a COMPETITIVE Pokemon set using full Smogon logic
+     * This uses move validation, ability synergy, nature selection, etc.
+     *
+     * Gen8: Uses dynamic generation with full competitive logic
+     * Gen9: Uses pre-built sets from static pool (draft-factory-matchups)
+     *
+     * @param pokemonName The Pokemon's name
+     * @param types The Pokemon's types (e.g., Arrays.asList("Fire", "Flying"))
+     * @return Optional containing a competitive SetGenerator.RandomSet
+     */
+    public Optional<SetGenerator.RandomSet> generateCompetitiveSet(String pokemonName, List<String> types) {
+        Optional<PokemonData> pokemonOpt = getPokemon(pokemonName);
+        if (pokemonOpt.isEmpty()) {
+            SmogonImporter.LOGGER.warn("Pokemon not found in database: {}", pokemonName);
+            return Optional.empty();
+        }
+
+        try {
+            // GENERATION ROUTING: Gen8 vs Gen9
+            if (SmogonConfig.isGen9()) {
+                SmogonImporter.LOGGER.info("Using Gen9 mode for {}", pokemonName);
+                // Gen9: Get pre-built set from static pool
+                return generateGen9Set(pokemonName);
+            } else {
+                SmogonImporter.LOGGER.info("Using Gen8 mode for {}", pokemonName);
+                // Gen8: Dynamic generation with full competitive logic
+                return generateGen8Set(pokemonOpt.get(), pokemonName, types);
+            }
+        } catch (Exception e) {
+            SmogonImporter.LOGGER.error("Failed to generate competitive set for {}", pokemonName, e);
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Generate a Gen8 competitive set using dynamic generation
+     */
+    private Optional<SetGenerator.RandomSet> generateGen8Set(PokemonData pokemonData, String pokemonName, List<String> types) {
+        SetGenerator generator = new SetGenerator();
+        SetGenerator.RandomSet set = generator.generateSet(pokemonData, pokemonName, types);
+        return Optional.of(set);
+    }
+
+    /**
+     * Generate a Gen9 competitive set using dynamic generation with role selection
+     * Randomly selects from available roles for the Pokemon
+     */
+    private Optional<SetGenerator.RandomSet> generateGen9Set(String pokemonName) {
+        SmogonImporter.LOGGER.info("Generating Gen9 competitive set for: {}", pokemonName);
+
+        // Get ALL roles for this Pokemon
+        List<PokemonData> allRoles = dataManager.getAllRolesForPokemon(pokemonName);
+
+        if (allRoles.isEmpty()) {
+            SmogonImporter.LOGGER.warn("No Gen9 data found for: {}", pokemonName);
+            return Optional.empty();
+        }
+
+        // Randomly select a role
+        PokemonData selectedRole = allRoles.get(new java.util.Random().nextInt(allRoles.size()));
+
+        SmogonImporter.LOGGER.info("Selected role '{}' for {} ({} total roles available)",
+            selectedRole.getRole(), pokemonName, allRoles.size());
+
+        // Get types from pokedex
+        List<String> types = dataManager.getDataRegistry().getPokemonTypes(pokemonName);
+
+        // Use SetGenerator to apply competitive logic (with role)
+        SetGenerator generator = new SetGenerator();
+        SetGenerator.RandomSet set = generator.generateSet(selectedRole, pokemonName, types);
+
+        SmogonImporter.LOGGER.debug("Generated Gen9 competitive set for {} ({}): {}",
+            pokemonName, selectedRole.getRole(), set);
+        return Optional.of(set);
+    }
+
+    /**
+     * Generate a COMPETITIVE team using full Smogon logic
+     *
+     * @param count Number of Pokemon in the team
+     * @return List of competitive sets
+     */
+    public List<SetGenerator.RandomSet> generateCompetitiveTeam(int count) {
+        List<PokemonData> randomPokemon = getRandomPokemon(count);
+        List<SetGenerator.RandomSet> team = new ArrayList<>();
+
+        for (PokemonData pokemon : randomPokemon) {
+            // TODO: Get actual types from Pixelmon or store in JSON
+            // For now, use placeholder types
+            List<String> types = Arrays.asList("Normal");
+
+            Optional<SetGenerator.RandomSet> setOpt = generateCompetitiveSet(pokemon.getName(), types);
+            setOpt.ifPresent(team::add);
+        }
+
+        return team;
+    }
+
+    /**
+     * Create an actual Pixelmon Pokemon object from a competitive set
+     *
+     * @param set The generated competitive set
+     * @return Pixelmon Pokemon object (or null if Pixelmon not available)
+     */
+    public Object createPixelmonPokemon(SetGenerator.RandomSet set) {
+        return PixelmonBuilder.buildPokemon(set);
+    }
+
+    /**
+     * Generate and spawn a competitive Pokemon directly
+     *
+     * @param pokemonName The Pokemon's name
+     * @param types The Pokemon's types
+     * @return Pixelmon Pokemon object (or null if generation/Pixelmon failed)
+     */
+    public Object generateAndSpawnCompetitivePokemon(String pokemonName, List<String> types) {
+        Optional<SetGenerator.RandomSet> setOpt = generateCompetitiveSet(pokemonName, types);
+
+        if (setOpt.isEmpty()) {
+            return null;
+        }
+
+        return createPixelmonPokemon(setOpt.get());
     }
 
     /**

@@ -29,8 +29,8 @@ public class SmogonImporter {
     public SmogonImporter(IEventBus modBus, ModContainer container) {
         instance = this;
 
-        // Register config
-        container.registerConfig(ModConfig.Type.COMMON, SmogonConfig.SPEC);
+        // Register config (nested inside smogonimporter folder)
+        container.registerConfig(ModConfig.Type.COMMON, SmogonConfig.SPEC, "smogonimporter/smogonimporter-common.toml");
 
         // Register mod event listeners
         modBus.addListener(this::commonSetup);

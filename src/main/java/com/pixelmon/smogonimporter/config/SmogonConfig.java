@@ -10,9 +10,7 @@ public class SmogonConfig {
     public static final ModConfigSpec SPEC;
     public static final SmogonConfig CONFIG;
 
-    // Data URLs
-    public static ModConfigSpec.ConfigValue<String> PRIMARY_DATA_URL;
-    public static ModConfigSpec.ConfigValue<List<? extends String>> BACKUP_DATA_URLS;
+    // Generation selection (ONLY gen8 or gen9 allowed)
     public static ModConfigSpec.ConfigValue<String> GENERATION;
 
     // Cache settings
@@ -42,21 +40,19 @@ public class SmogonConfig {
         builder.comment("Smogon Importer Configuration")
                 .push("data_sources");
 
-        PRIMARY_DATA_URL = builder
-                .comment("Primary URL for fetching Pokemon data")
-                .define("primary_url", "https://data.pkmn.cc/randbats/gen8randombattle.json");
-
-        BACKUP_DATA_URLS = builder
-                .comment("Backup URLs to try if primary fails")
-                .define("backup_urls",
-                        java.util.Arrays.asList(
-                                "https://raw.githubusercontent.com/pkmn/randbats/main/data/gen8randombattle.json"
-                        ),
-                        obj -> obj instanceof String);
-
         GENERATION = builder
-                .comment("Pokemon generation to use (gen1-gen9)")
-                .define("generation", "gen8");
+                .comment("Pokemon generation to use",
+                         "ONLY gen8 or gen9 allowed!",
+                         "",
+                         "gen8 = Uses Gen8 random battles data with dynamic competitive set generation",
+                         "       Source: github.com/smogon/pokemon-showdown/data/random-battles/gen8/data.json",
+                         "gen9 = Uses Gen9 pre-built competitive sets from random battles",
+                         "       Source: github.com/smogon/pokemon-showdown/data/random-battles/gen9/sets.json",
+                         "",
+                         "Note: URLs are HARDCODED in code - do not modify!",
+                         "Note: Gen9 Tera types are read but not used (Pixelmon doesn't support them yet)")
+                .define("generation", "gen8",
+                        obj -> obj != null && (obj.equals("gen8") || obj.equals("gen9")));
 
         builder.pop();
 
@@ -111,5 +107,135 @@ public class SmogonConfig {
                 .define("allow_custom_sets", true);
 
         builder.pop();
+    }
+
+    // ==================== HARDCODED DATA URLS ====================
+    // URLs are NOT configurable to prevent incompatible data sources
+
+    // Base GitHub URL for Smogon Pokemon Showdown repository
+    private static final String GITHUB_BASE = "https://raw.githubusercontent.com/smogon/pokemon-showdown/master/data";
+
+    /**
+     * Get primary data URL for the configured generation
+     * HARDCODED - Gen8 vs Gen9 use different endpoints
+     */
+    public static String getPrimaryDataURL() {
+        String gen = GENERATION.get();
+
+        if ("gen9".equals(gen)) {
+            // Gen9 uses sets.json (pre-built competitive sets)
+            return GITHUB_BASE + "/random-battles/gen9/sets.json";
+        } else {
+            // Gen8 uses data.json (for dynamic generation)
+            return GITHUB_BASE + "/random-battles/gen8/data.json";
+        }
+    }
+
+    /**
+     * Get backup URLs for the configured generation
+     * HARDCODED - Different backups per generation via CDN
+     */
+    public static java.util.List<String> getBackupDataURLs() {
+        String gen = GENERATION.get();
+        String cdnBase = "https://cdn.jsdelivr.net/gh/smogon/pokemon-showdown@master/data";
+
+        if ("gen9".equals(gen)) {
+            // Gen9 backups - sets.json from CDN
+            return java.util.Arrays.asList(
+                cdnBase + "/random-battles/gen9/sets.json"
+            );
+        } else {
+            // Gen8 backups - data.json from CDN
+            return java.util.Arrays.asList(
+                cdnBase + "/random-battles/gen8/data.json"
+            );
+        }
+    }
+
+    /**
+     * Get moves data URL (TypeScript file)
+     * Contains move names, types, categories, power, accuracy, etc.
+     */
+    public static String getMovesDataURL() {
+        return GITHUB_BASE + "/moves.ts";
+    }
+
+    /**
+     * Get abilities data URL (TypeScript file)
+     * Contains ability names, ratings, and effects
+     */
+    public static String getAbilitiesDataURL() {
+        return GITHUB_BASE + "/abilities.ts";
+    }
+
+    /**
+     * Get items data URL (TypeScript file)
+     * Contains item names, categories, and effects
+     */
+    public static String getItemsDataURL() {
+        return GITHUB_BASE + "/items.ts";
+    }
+
+    /**
+     * Get pokedex data URL (TypeScript file)
+     * Contains Pokemon species data: types, base stats, abilities, etc.
+     */
+    public static String getPokedexDataURL() {
+        return GITHUB_BASE + "/pokedex.ts";
+    }
+
+    /**
+     * Get type chart data URL (TypeScript file)
+     * Contains type effectiveness and list of all Pokemon types
+     */
+    public static String getTypeChartDataURL() {
+        return GITHUB_BASE + "/typechart.ts";
+    }
+
+    /**
+     * Get natures data URL (TypeScript file)
+     * Contains nature stat modifications
+     */
+    public static String getNaturesDataURL() {
+        return GITHUB_BASE + "/natures.ts";
+    }
+
+    /**
+     * Get rulesets data URL (TypeScript file)
+     * Contains battle format rules and restrictions
+     */
+    public static String getRulesetsDataURL() {
+        return GITHUB_BASE + "/rulesets.ts";
+    }
+
+    /**
+     * Get tags data URL (TypeScript file)
+     * Contains Pokemon tags and categories
+     */
+    public static String getTagsDataURL() {
+        return GITHUB_BASE + "/tags.ts";
+    }
+
+    /**
+     * Get teams helper file URL for the configured generation
+     * Contains team building logic and strategies
+     */
+    public static String getTeamsDataURL() {
+        String gen = GENERATION.get();
+        return GITHUB_BASE + "/random-battles/" + gen + "/teams.ts";
+    }
+
+    /**
+     * Check if current generation is Gen9
+     */
+    public static boolean isGen9() {
+        return "gen9".equals(GENERATION.get());
+    }
+
+    /**
+     * Check if current generation is Gen8
+     */
+    public static boolean isGen8() {
+        return "gen8".equals(GENERATION.get());
     }
 }

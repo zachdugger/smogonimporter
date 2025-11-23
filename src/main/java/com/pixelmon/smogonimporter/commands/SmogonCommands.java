@@ -3,13 +3,16 @@ package com.pixelmon.smogonimporter.commands;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.suggestion.SuggestionProvider;
 import com.pixelmon.smogonimporter.SmogonImporter;
 import com.pixelmon.smogonimporter.api.SmogonAPI;
 import com.pixelmon.smogonimporter.config.SmogonConfig;
-import com.pixelmon.smogonimporter.data.models.PokemonData;
+import com.pixelmon.smogonimporter.data.PokemonData;
+import com.pixelmon.smogonimporter.logic.SetGenerator;
 import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
+import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.network.chat.Component;
 
 import java.util.List;
@@ -17,6 +20,19 @@ import java.util.Map;
 import java.util.Optional;
 
 public class SmogonCommands {
+
+    /**
+     * Dynamic suggestion provider for Pokemon names
+     * Automatically updates based on loaded generation (Gen8 or Gen9)
+     */
+    private static final SuggestionProvider<CommandSourceStack> POKEMON_SUGGESTIONS = (context, builder) -> {
+        SmogonAPI api = SmogonImporter.getAPI();
+        if (api.isReady()) {
+            List<String> pokemonNames = api.getAllPokemonNames();
+            return SharedSuggestionProvider.suggest(pokemonNames, builder);
+        }
+        return builder.buildFuture();
+    };
 
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
         if (!SmogonConfig.ENABLE_COMMANDS.get()) {
@@ -51,6 +67,7 @@ public class SmogonCommands {
                 // Get Pokemon info command
                 .then(Commands.literal("get")
                         .then(Commands.argument("pokemon", StringArgumentType.string())
+                                .suggests(POKEMON_SUGGESTIONS)
                                 .executes(context -> {
                                     String pokemonName = StringArgumentType.getString(context, "pokemon");
                                     SmogonAPI api = SmogonImporter.getAPI();
@@ -109,42 +126,80 @@ public class SmogonCommands {
                                     return executeRandom(context, count);
                                 })))
 
-                // Generate random set command
+                // Generate competitive set command
                 .then(Commands.literal("generate")
                         .then(Commands.argument("pokemon", StringArgumentType.string())
+                                .suggests(POKEMON_SUGGESTIONS)
                                 .executes(context -> {
                                     String pokemonName = StringArgumentType.getString(context, "pokemon");
                                     SmogonAPI api = SmogonImporter.getAPI();
 
-                                    Optional<SmogonAPI.RandomSet> setOpt = api.generateRandomSet(pokemonName);
-
-                                    if (setOpt.isPresent()) {
-                                        SmogonAPI.RandomSet set = setOpt.get();
-
-                                        context.getSource().sendSuccess(() ->
-                                                Component.literal("=== Generated Set ===")
-                                                        .withStyle(ChatFormatting.GOLD), false);
-
-                                        context.getSource().sendSuccess(() ->
-                                                Component.literal(set.pokemonName + " @ " + set.item)
-                                                        .withStyle(ChatFormatting.YELLOW), false);
-
-                                        context.getSource().sendSuccess(() ->
-                                                Component.literal("Ability: " + set.ability)
-                                                        .withStyle(ChatFormatting.GREEN), false);
-
-                                        context.getSource().sendSuccess(() ->
-                                                Component.literal("Level: " + set.level)
-                                                        .withStyle(ChatFormatting.AQUA), false);
-
-                                        context.getSource().sendSuccess(() ->
-                                                Component.literal("Moves: " + String.join(" / ", set.moves))
-                                                        .withStyle(ChatFormatting.LIGHT_PURPLE), false);
-                                    } else {
+                                    if (!api.isReady()) {
                                         context.getSource().sendFailure(
-                                                Component.literal("Failed to generate set for '" + pokemonName + "'!")
+                                                Component.literal("Smogon data not yet loaded!")
                                                         .withStyle(ChatFormatting.RED));
+                                        return 0;
                                     }
+
+                                    // For now, use Normal type as placeholder
+                                    // TODO: Get actual types from Pixelmon
+                                    java.util.List<String> types = java.util.Arrays.asList("Normal");
+
+                                    Optional<SetGenerator.RandomSet> setOpt = api.generateCompetitiveSet(pokemonName, types);
+
+                                    if (setOpt.isEmpty()) {
+                                        context.getSource().sendFailure(
+                                                Component.literal("Failed to generate competitive set for " + pokemonName)
+                                                        .withStyle(ChatFormatting.RED));
+                                        return 0;
+                                    }
+
+                                    SetGenerator.RandomSet set = setOpt.get();
+
+                                    // Display the competitive set
+                                    context.getSource().sendSuccess(() ->
+                                            Component.literal("=== COMPETITIVE SET: " + set.getSpecies() + " ===")
+                                                    .withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD), false);
+
+                                    // Show role if Gen9
+                                    if (set.hasRole()) {
+                                        context.getSource().sendSuccess(() ->
+                                                Component.literal("Role: " + set.getRole())
+                                                        .withStyle(ChatFormatting.DARK_PURPLE), false);
+                                    }
+
+                                    context.getSource().sendSuccess(() ->
+                                            Component.literal(set.getSpecies() + " @ " + set.getItem())
+                                                    .withStyle(ChatFormatting.YELLOW), false);
+
+                                    context.getSource().sendSuccess(() ->
+                                            Component.literal("Ability: " + set.getAbility())
+                                                    .withStyle(ChatFormatting.GREEN), false);
+
+                                    context.getSource().sendSuccess(() ->
+                                            Component.literal("Nature: " + set.getNature())
+                                                    .withStyle(ChatFormatting.LIGHT_PURPLE), false);
+
+                                    context.getSource().sendSuccess(() ->
+                                            Component.literal("Level: " + set.getLevel())
+                                                    .withStyle(ChatFormatting.AQUA), false);
+
+                                    context.getSource().sendSuccess(() ->
+                                            Component.literal("Moves:")
+                                                    .withStyle(ChatFormatting.WHITE), false);
+                                    for (String move : set.getMoves()) {
+                                        context.getSource().sendSuccess(() ->
+                                                Component.literal("  - " + move)
+                                                        .withStyle(ChatFormatting.GRAY), false);
+                                    }
+
+                                    context.getSource().sendSuccess(() ->
+                                            Component.literal("EVs: " + set.getEvs())
+                                                    .withStyle(ChatFormatting.BLUE), false);
+
+                                    context.getSource().sendSuccess(() ->
+                                            Component.literal("IVs: " + set.getIvs())
+                                                    .withStyle(ChatFormatting.DARK_AQUA), false);
 
                                     return 1;
                                 })))

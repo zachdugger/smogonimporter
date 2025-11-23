@@ -88,7 +88,7 @@ dependencies {
     // - Apache Commons - provided by Minecraft
 
     // Pixelmon (optional - add when you have the file)
-    // implementation files('libs/Pixelmon-1.21-9.3.9.jar')
+    implementation files('libs/Pixelmon-1.21-9.3.9.jar')
 }
 
 // Ensure we don't include any provided libraries in our JAR
